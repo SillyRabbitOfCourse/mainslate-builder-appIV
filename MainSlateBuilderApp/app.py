@@ -1249,10 +1249,15 @@ def run_app():
             # GUARANTEED LINEUP GENERATION (NEW)
             # -------------------------------------------
 
+            # -------------------------------------------
+            # GUARANTEED LINEUP GENERATION (OPTIONAL SAFETY CAP)
+            # -------------------------------------------
+
             lineups = []
             used_keys = set()
 
-            MAX_ATTEMPTS_PER_LINEUP = 20000   # Increased to guarantee builds
+            USE_SAFETY_CAP = True          # ← Turn ON/OFF the safeguard
+            SAFETY_CAP_ATTEMPTS = 20000    # ← Attempts allowed per lineup when cap is ON
 
             for team in STACK_TEAMS:
                 target = stack_counts.get(team, 0)
@@ -1262,16 +1267,35 @@ def run_app():
 
                 while built < target:
 
+                    # Reset attempts for THIS lineup only
                     attempts_for_this_lineup = 0
                     success = False
 
-                    while attempts_for_this_lineup < MAX_ATTEMPTS_PER_LINEUP:
+                    # Try until success (or until safety cap hits, if enabled)
+                    while True:
+
                         attempts_for_this_lineup += 1
 
-                        # Pick mini-rule (if any remaining)
+                        # -------------------------
+                        # Safety cap check
+                        # -------------------------
+                        if USE_SAFETY_CAP and attempts_for_this_lineup > SAFETY_CAP_ATTEMPTS:
+                            st.error(
+                                f"Stopped trying to build lineup #{built+1} for team {team} "
+                                f"after {SAFETY_CAP_ATTEMPTS} attempts.\n"
+                                f"Your constraints may be impossible — "
+                                f"or increase SAFETY_CAP_ATTEMPTS."
+                            )
+                            st.stop()
+
+                        # -------------------------
+                        # Pick applicable mini-rule
+                        # -------------------------
                         m_rule = pick_mini_rule(team)
 
-                        # Attempt lineup
+                        # -------------------------
+                        # Attempt lineup build
+                        # -------------------------
                         lu = build_stack_lineup(
                             df_final,
                             pos_groups,
@@ -1281,34 +1305,30 @@ def run_app():
                         )
 
                         if lu is None:
-                            continue
+                            continue  # Try again
 
-                        # Deduplication (player-ID set)
+                        # -------------------------
+                        # Dedup check
+                        # -------------------------
                         key = tuple(sorted([item["Player"].ID for item in lu]))
                         if key in used_keys:
                             continue
 
-                        # Success: accept lineup
+                        # -------------------------
+                        # SUCCESS
+                        # -------------------------
                         used_keys.add(key)
                         lineups.append(lu)
                         built += 1
                         success = True
 
-                        # Reduce mini-rule remaining if used
+                        # Reduce mini-rule remaining
                         if m_rule is not None:
                             m_rule["remaining"] -= 1
 
-                        break  # exit attempts loop
+                        break  # Done with this lineup
 
-                    # If we failed after attempts_for_this_lineup tries:
-                    if not success:
-                        st.error(
-                            f"Unable to build required lineup #{built+1} for team {team} "
-                            f"after {MAX_ATTEMPTS_PER_LINEUP} attempts.\n"
-                            f"This means constraints are logically impossible, "
-                            f"not due to time limits."
-                        )
-                        st.stop()
+                    # End of lineup attempt loop
 
                 st.success(f"Finished: built {built}/{target} lineups for {team}.")
 
