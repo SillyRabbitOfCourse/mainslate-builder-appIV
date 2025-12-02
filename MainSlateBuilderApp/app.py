@@ -1140,6 +1140,9 @@ def run_app():
     # ================================================================
     #                         BUILD LINEUPS TAB
     # ================================================================
+        # ================================================================
+    #                         BUILD LINEUPS TAB
+    # ================================================================
     with tab_build:
         st.subheader("Generate Lineups")
 
@@ -1157,7 +1160,6 @@ def run_app():
             SALARY_CAP = int(salary_cap)
             MIN_SALARY = int(min_salary)
             RANDOM_SEED = None if seed < 0 else int(seed)
-            MAX_OVERALL_ATTEMPTS = NUM_LINEUPS * 100
 
             if RANDOM_SEED is not None:
                 random.seed(RANDOM_SEED)
@@ -1166,36 +1168,31 @@ def run_app():
                 st.error("Please select at least one stack team before building.")
                 return
 
-            # Exposures check
+            # Exposure sanity check
             if sum(STACK_EXPOSURES.get(t, 0.0) for t in STACK_TEAMS) == 0.0:
                 st.error("All stack exposures are 0%. Please increase at least one team.")
                 return
 
             # -------------------------------------------
-            # Re-filter the final player pool
+            # Final filtered pool
             # -------------------------------------------
             df_final = apply_global_team_filters(
                 df_raw, TEAM_FILTER_MODE, TEAM_FILTER_KEEP, TEAM_FILTER_EXCLUDE
             )
 
-            # Regenerate opponent map on final DF
+            # Final opponent map
             opponent_map_final = extract_opponents(df_final)
 
+            # Position groups
             pos_groups = position_split(df_final)
 
             # -------------------------------------------
-            # Determine how many lineups each stack gets
+            # Determine stack counts
             # -------------------------------------------
             stack_counts = {
                 team: int(NUM_LINEUPS * STACK_EXPOSURES.get(team, 0.0))
                 for team in STACK_TEAMS
             }
-            total_planned = sum(stack_counts.values())
-
-            if total_planned == 0:
-                st.error("Total planned stack lineups is 0. Increase exposures.")
-                return
-
             st.write("### Planned Lineups Per Stack:")
             st.json(stack_counts)
 
@@ -1231,7 +1228,7 @@ def run_app():
 
             mini_state = init_mini_stack_state(NUM_LINEUPS, MINI_STACKS)
 
-            # Mini-rule selector
+            # Helper for mini-rule selection
             def pick_mini_rule(stack_team):
                 for r in mini_state:
                     if r["remaining"] <= 0:
@@ -1243,21 +1240,13 @@ def run_app():
                 return None
 
             # -------------------------------------------
-            # GENERATE LINEUPS
-            # -------------------------------------------
-            # -------------------------------------------
             # GUARANTEED LINEUP GENERATION (NEW)
             # -------------------------------------------
-
-            # -------------------------------------------
-            # GUARANTEED LINEUP GENERATION (OPTIONAL SAFETY CAP)
-            # -------------------------------------------
+            import time
 
             lineups = []
             used_keys = set()
-
-            USE_SAFETY_CAP = True          # ← Turn ON/OFF the safeguard
-            SAFETY_CAP_ATTEMPTS = 20000    # ← Attempts allowed per lineup when cap is ON
+            MAX_ATTEMPTS_PER_LINEUP = 20000
 
             for team in STACK_TEAMS:
                 target = stack_counts.get(team, 0)
@@ -1265,37 +1254,26 @@ def run_app():
 
                 st.info(f"Building {target} lineups for team {team}...")
 
+                # Progress bar
+                progress = st.progress(0)
+
+                # Start timer
+                team_start = time.time()
+
+                # Start building
                 while built < target:
 
-                    # Reset attempts for THIS lineup only
                     attempts_for_this_lineup = 0
                     success = False
 
-                    # Try until success (or until safety cap hits, if enabled)
-                    while True:
-
+                    # Attempt until success or cap
+                    while attempts_for_this_lineup < MAX_ATTEMPTS_PER_LINEUP:
                         attempts_for_this_lineup += 1
 
-                        # -------------------------
-                        # Safety cap check
-                        # -------------------------
-                        if USE_SAFETY_CAP and attempts_for_this_lineup > SAFETY_CAP_ATTEMPTS:
-                            st.error(
-                                f"Stopped trying to build lineup #{built+1} for team {team} "
-                                f"after {SAFETY_CAP_ATTEMPTS} attempts.\n"
-                                f"Your constraints may be impossible — "
-                                f"or increase SAFETY_CAP_ATTEMPTS."
-                            )
-                            st.stop()
-
-                        # -------------------------
-                        # Pick applicable mini-rule
-                        # -------------------------
+                        # Select mini-rule if any remain
                         m_rule = pick_mini_rule(team)
 
-                        # -------------------------
-                        # Attempt lineup build
-                        # -------------------------
+                        # Attempt lineup
                         lu = build_stack_lineup(
                             df_final,
                             pos_groups,
@@ -1305,32 +1283,44 @@ def run_app():
                         )
 
                         if lu is None:
-                            continue  # Try again
+                            continue
 
-                        # -------------------------
-                        # Dedup check
-                        # -------------------------
+                        # Dedup
                         key = tuple(sorted([item["Player"].ID for item in lu]))
                         if key in used_keys:
                             continue
 
-                        # -------------------------
                         # SUCCESS
-                        # -------------------------
                         used_keys.add(key)
                         lineups.append(lu)
                         built += 1
                         success = True
 
-                        # Reduce mini-rule remaining
-                        if m_rule is not None:
+                        # Reduce mini-rule remaining if used
+                        if m_rule is not None and "remaining" in m_rule:
                             m_rule["remaining"] -= 1
 
-                        break  # Done with this lineup
+                        break  # lineup successfully built
 
-                    # End of lineup attempt loop
+                    # Safety error
+                    if not success:
+                        st.error(
+                            f"Unable to build required lineup #{built+1} for team {team} "
+                            f"after {MAX_ATTEMPTS_PER_LINEUP} attempts. Constraints may be impossible."
+                        )
+                        st.stop()
 
-                st.success(f"Finished: built {built}/{target} lineups for {team}.")
+                    # Update progress bar
+                    progress.progress(built / target)
+
+                    # ETA update
+                    elapsed = time.time() - team_start
+                    if built > 0:
+                        rate = elapsed / built
+                        remaining = (target - built) * rate
+                        st.caption(f"ETA: {remaining:.1f} seconds remaining")
+
+                st.success(f"Finished: built {built}/{target} lineups for {team}!")
 
             # -------------------------------------------
             # Final checks
@@ -1342,7 +1332,7 @@ def run_app():
             st.success(f"Successfully generated {len(lineups)} lineups!")
 
             # -------------------------------------------
-            # Convert to DataFrame for download
+            # Convert to DF
             # -------------------------------------------
             def lineups_to_df(lineups):
                 rows = []
@@ -1361,7 +1351,7 @@ def run_app():
             st.dataframe(df_out)
 
             # -------------------------------------------
-            # DOWNLOAD BUTTON
+            # Download button
             # -------------------------------------------
             st.download_button(
                 label="Download Lineups CSV",
@@ -1369,6 +1359,7 @@ def run_app():
                 file_name="DFS_Lineups.csv",
                 mime="text/csv"
             )
+
 # ================================================================
 #                           APP ENTRY POINT
 # ================================================================
