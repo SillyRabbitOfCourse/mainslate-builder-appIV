@@ -11,7 +11,7 @@ import re
 # These will be overwritten by Streamlit UI
 NUM_LINEUPS = 40
 SALARY_CAP = 50000            # Corrected salary cap
-MIN_SALARY = 4900
+MIN_SALARY = 49000
 RANDOM_SEED = 42
 
 SLOT_ORDER = ["QB", "RB1", "RB2", "WR1", "WR2", "WR3", "TE", "FLEX", "DST"]
@@ -1245,49 +1245,72 @@ def run_app():
             # -------------------------------------------
             # GENERATE LINEUPS
             # -------------------------------------------
+            # -------------------------------------------
+            # GUARANTEED LINEUP GENERATION (NEW)
+            # -------------------------------------------
+
             lineups = []
             used_keys = set()
 
-            # Loop through each stack team
+            MAX_ATTEMPTS_PER_LINEUP = 20000   # Increased to guarantee builds
+
             for team in STACK_TEAMS:
                 target = stack_counts.get(team, 0)
                 built = 0
-                attempts = 0
 
-                st.info(f"Building lineups for team {team}...")
+                st.info(f"Building {target} lineups for team {team}...")
 
-                while built < target and attempts < MAX_OVERALL_ATTEMPTS:
-                    attempts += 1
+                while built < target:
 
-                    # Select mini-rule if any available
-                    m_rule = pick_mini_rule(team)
+                    attempts_for_this_lineup = 0
+                    success = False
 
-                    # Attempt to build one lineup
-                    lu = build_stack_lineup(
-                        df_final,
-                        pos_groups,
-                        team,
-                        m_rule,
-                        opponent_map_final,
-                    )
-                    if lu is None:
-                        continue
+                    while attempts_for_this_lineup < MAX_ATTEMPTS_PER_LINEUP:
+                        attempts_for_this_lineup += 1
 
-                    # Deduplication
-                    key = tuple(sorted([item["Player"].ID for item in lu]))
-                    if key in used_keys:
-                        continue
+                        # Pick mini-rule (if any remaining)
+                        m_rule = pick_mini_rule(team)
 
-                    # Accept lineup
-                    used_keys.add(key)
-                    lineups.append(lu)
-                    built += 1
+                        # Attempt lineup
+                        lu = build_stack_lineup(
+                            df_final,
+                            pos_groups,
+                            team,
+                            m_rule,
+                            opponent_map_final,
+                        )
 
-                    # Decrease mini-rule exposure count
-                    if m_rule is not None:
-                        m_rule["remaining"] -= 1
+                        if lu is None:
+                            continue
 
-                st.write(f"Built {built}/{target} lineups for {team}.")
+                        # Deduplication (player-ID set)
+                        key = tuple(sorted([item["Player"].ID for item in lu]))
+                        if key in used_keys:
+                            continue
+
+                        # Success: accept lineup
+                        used_keys.add(key)
+                        lineups.append(lu)
+                        built += 1
+                        success = True
+
+                        # Reduce mini-rule remaining if used
+                        if m_rule is not None:
+                            m_rule["remaining"] -= 1
+
+                        break  # exit attempts loop
+
+                    # If we failed after attempts_for_this_lineup tries:
+                    if not success:
+                        st.error(
+                            f"Unable to build required lineup #{built+1} for team {team} "
+                            f"after {MAX_ATTEMPTS_PER_LINEUP} attempts.\n"
+                            f"This means constraints are logically impossible, "
+                            f"not due to time limits."
+                        )
+                        st.stop()
+
+                st.success(f"Finished: built {built}/{target} lineups for {team}.")
 
             # -------------------------------------------
             # Final checks
