@@ -987,6 +987,9 @@ def run_app():
     # ================================================================
     #                         MINI-STACKS TAB
     # ================================================================
+        # ================================================================
+    #                         MINI-STACKS TAB
+    # ================================================================
     with tab_minis:
         st.subheader("Mini-stacks (secondary correlations)")
 
@@ -1023,25 +1026,68 @@ def run_app():
         # Global DK slot caps
         POS_CAPS = {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "DST": 1}
 
-        # --- Helper: get positions of the two mini players ---
-        def mini_positions(rule: Dict) -> Dict[str, int]:
-            """
-            Returns dict like {"RB": 1, "WR": 1, ...} for the mini pair.
-            """
-            counts = {p: 0 for p in POS_CAPS.keys()}
+        # -------------------------------
+        #       Slot counting helpers
+        # -------------------------------
+        def locked_slots(team: str):
+            locked = {p: 0 for p in POS_CAPS}
+
+            # Required players
+            req = STACK_REQUIRED.get(team, [])
+            if req:
+                r = df_filtered[
+                    (df_filtered["TeamAbbrev"] == team) &
+                    (df_filtered["Name"].isin(req))
+                ]
+                for pos in POS_CAPS:
+                    locked[pos] += (r["Position"] == pos).sum()
+
+            # Optional players at 100%
+            opt_map = STACK_OPTIONAL.get(team, {})
+            always = [n for n, pct in opt_map.items() if pct >= 1.0]
+            if always:
+                r2 = df_filtered[
+                    (df_filtered["TeamAbbrev"] == team) &
+                    (df_filtered["Name"].isin(always))
+                ]
+                for pos in POS_CAPS:
+                    locked[pos] += (r2["Position"] == pos).sum()
+
+            return locked
+
+        def global_remaining_slots():
+            """Compute remaining positional capacity across ALL stack teams."""
+            locked_global = {p: 0 for p in POS_CAPS}
+
+            for t in STACK_TEAMS:
+                locked_t = locked_slots(t)
+                for pos in POS_CAPS:
+                    locked_global[pos] += locked_t[pos]
+
+            remaining = {
+                pos: max(0, POS_CAPS[pos] - locked_global[pos])
+                for pos in POS_CAPS
+            }
+            return remaining
+
+        # -------------------------------
+        #    Mini pair position counter
+        # -------------------------------
+        def mini_positions(rule):
+            counts = {p: 0 for p in POS_CAPS}
 
             if rule["type"] == "same_team":
-                t = rule.get("team", "")
-                p1_name = rule.get("player1", "")
-                p2_name = rule.get("player2", "")
+                team = rule.get("team", "")
+                p1 = rule.get("player1", "")
+                p2 = rule.get("player2", "")
 
                 r1 = df_filtered[
-                    (df_filtered["TeamAbbrev"] == t) &
-                    (df_filtered["Name"] == p1_name)
+                    (df_filtered["TeamAbbrev"] == team) &
+                    (df_filtered["Name"] == p1)
                 ]
                 r2 = df_filtered[
-                    (df_filtered["TeamAbbrev"] == t) &
-                    (df_filtered["Name"] == p2_name)
+                    (df_filtered["TeamAbbrev"] == team) &
+                    (df_filtered["Name"] == p2)
                 ]
 
                 if not r1.empty:
@@ -1052,16 +1098,16 @@ def run_app():
             elif rule["type"] == "opposing_teams":
                 t1 = rule.get("team1", "")
                 t2 = rule.get("team2", "")
-                p1_name = rule.get("player1", "")
-                p2_name = rule.get("player2", "")
+                p1 = rule.get("player1", "")
+                p2 = rule.get("player2", "")
 
                 r1 = df_filtered[
                     (df_filtered["TeamAbbrev"] == t1) &
-                    (df_filtered["Name"] == p1_name)
+                    (df_filtered["Name"] == p1)
                 ]
                 r2 = df_filtered[
                     (df_filtered["TeamAbbrev"] == t2) &
-                    (df_filtered["Name"] == p2_name)
+                    (df_filtered["Name"] == p2)
                 ]
 
                 if not r1.empty:
@@ -1071,41 +1117,14 @@ def run_app():
 
             return counts
 
-        # --- Helper: count locked slots (stack-required + opt-100%) ---
-        def locked_slots(team: str) -> Dict[str, int]:
-            locked = {p: 0 for p in POS_CAPS.keys()}
-
-            # Required players
-            req = STACK_REQUIRED.get(team, [])
-            if req:
-                r = df_filtered[
-                    (df_filtered["TeamAbbrev"] == team) &
-                    (df_filtered["Name"].isin(req))
-                ]
-                for pos in POS_CAPS.keys():
-                    locked[pos] += (r["Position"] == pos).sum()
-
-            # Optional players with 100% sprinkle
-            opt_map = STACK_OPTIONAL.get(team, {})
-            always = [n for n, pct in opt_map.items() if pct >= 1.0]
-            if always:
-                r2 = df_filtered[
-                    (df_filtered["TeamAbbrev"] == team) &
-                    (df_filtered["Name"].isin(always))
-                ]
-                for pos in POS_CAPS.keys():
-                    locked[pos] += (r2["Position"] == pos).sum()
-
-            return locked
-
-        # ===========================
-        #      MINI-RULE UI LOOP
-        # ===========================
+        # ================================================================
+        #                  MINI STACK UI + VALIDATION
+        # ================================================================
         for i, rule in enumerate(mini_rules):
 
             with st.expander(f"Mini-stack #{i+1} ({rule['type']})", expanded=False):
 
-                # ------------------ Global mini exposure cap (max 100% total) ------------------
+                # ------------------ Exposure Slider (global cap 100%) ------------------
                 other_sum = sum(
                     (r.get("exposure_pct", 0.0) / 100.0)
                     for j, r in enumerate(mini_rules)
@@ -1116,8 +1135,7 @@ def run_app():
 
                 exp = st.slider(
                     "Exposure (%)",
-                    0.0,
-                    remaining * 100.0,
+                    0.0, remaining * 100.0,
                     current,
                     1.0,
                     key=f"mini_exp_{i}",
@@ -1129,8 +1147,12 @@ def run_app():
                     remove_idx.append(i)
                     continue
 
-                # ------------------ SAME-TEAM MINI CONFIG ------------------
+                # GLOBAL REMAINING POSITION SLOTS
+                rem = global_remaining_slots()
+
+                # ------------------ SAME-TEAM MINI ------------------
                 if rule["type"] == "same_team":
+
                     team_opts = [""] + sorted(df_filtered["TeamAbbrev"].unique().tolist())
                     rule["team"] = st.selectbox(
                         "Team:",
@@ -1140,8 +1162,10 @@ def run_app():
                     )
 
                     if rule["team"]:
-                        team_players = df_filtered[df_filtered["TeamAbbrev"] == rule["team"]]["Name"].tolist()
-                        p_opts = [""] + sorted(team_players)
+                        # FILTER PLAYERS BASED ON REMAINING SLOTS
+                        df_team = df_filtered[df_filtered["TeamAbbrev"] == rule["team"]]
+                        df_team = df_team[df_team["Position"].apply(lambda pos: rem.get(pos, 0) > 0)]
+                        p_opts = [""] + sorted(df_team["Name"].tolist())
 
                         rule["player1"] = st.selectbox(
                             "Player 1:",
@@ -1149,18 +1173,21 @@ def run_app():
                             index=p_opts.index(rule["player1"]) if rule["player1"] in p_opts else 0,
                             key=f"mini_same_p1_{i}",
                         )
+
                         rule["player2"] = st.selectbox(
                             "Player 2:",
                             p_opts,
                             index=p_opts.index(rule["player2"]) if rule["player2"] in p_opts else 0,
                             key=f"mini_same_p2_{i}",
                         )
+
                     else:
                         rule["player1"] = ""
                         rule["player2"] = ""
 
-                # ------------------ OPPOSING-TEAM MINI CONFIG ------------------
+                # ------------------ OPPOSING-TEAMS MINI ------------------
                 elif rule["type"] == "opposing_teams":
+
                     team_opts = [""] + sorted(df_filtered["TeamAbbrev"].unique().tolist())
                     rule["team1"] = st.selectbox(
                         "Team 1:",
@@ -1169,7 +1196,7 @@ def run_app():
                         key=f"mini_opp_t1_{i}",
                     )
 
-                    # Auto-opponent as team2
+                    # Auto-pop opponent as team2
                     if rule["team1"] in opponent_map:
                         rule["team2"] = opponent_map[rule["team1"]]
                     else:
@@ -1177,11 +1204,20 @@ def run_app():
 
                     st.caption(f"Team 2 (opponent): **{rule['team2']}**")
 
-                    p1_pool = df_filtered[df_filtered["TeamAbbrev"] == rule["team1"]]["Name"].tolist() if rule["team1"] else []
-                    p2_pool = df_filtered[df_filtered["TeamAbbrev"] == rule["team2"]]["Name"].tolist() if rule["team2"] else []
+                    # Player pools filtered by SLOT AVAILABILITY
+                    if rule["team1"]:
+                        df_t1 = df_filtered[df_filtered["TeamAbbrev"] == rule["team1"]]
+                        df_t1 = df_t1[df_t1["Position"].apply(lambda pos: rem.get(pos, 0) > 0)]
+                        p1_opts = [""] + sorted(df_t1["Name"].tolist())
+                    else:
+                        p1_opts = [""]
 
-                    p1_opts = [""] + sorted(p1_pool)
-                    p2_opts = [""] + sorted(p2_pool)
+                    if rule["team2"]:
+                        df_t2 = df_filtered[df_filtered["TeamAbbrev"] == rule["team2"]]
+                        df_t2 = df_t2[df_t2["Position"].apply(lambda pos: rem.get(pos, 0) > 0)]
+                        p2_opts = [""] + sorted(df_t2["Name"].tolist())
+                    else:
+                        p2_opts = [""]
 
                     rule["player1"] = st.selectbox(
                         "Player from Team 1:",
@@ -1197,30 +1233,27 @@ def run_app():
                     )
 
                 # ==========================================================
-                #   UNIVERSAL FEASIBILITY CHECK (POSITION SLOT CONSTRAINTS)
+                #       FINAL UNIVERSAL FEASIBILITY VALIDATION
                 # ==========================================================
                 p1 = rule.get("player1")
                 p2 = rule.get("player2")
 
                 if p1 and p2 and STACK_TEAMS:
-                    mini_pos = mini_positions(rule)
+                    pos_counts = mini_positions(rule)
                     feasible = False
 
                     for t in STACK_TEAMS:
                         locked = locked_slots(t)
                         ok = True
-
-                        for pos in POS_CAPS.keys():
-                            if locked[pos] + mini_pos[pos] > POS_CAPS[pos]:
+                        for pos in POS_CAPS:
+                            if locked[pos] + pos_counts[pos] > POS_CAPS[pos]:
                                 ok = False
                                 break
-
                         if ok:
                             feasible = True
                             break
 
                     if not feasible:
-                        # Soft failure: clear fields and zero exposure
                         st.info(
                             "This mini-stack cannot fit into ANY stack build "
                             "given current positional locks. It has been cleared."
@@ -1236,13 +1269,14 @@ def run_app():
                 r for j, r in enumerate(mini_rules) if j not in remove_idx
             ]
 
-        # Preview expected usage
+        # Usage preview
         if st.session_state["mini_rules"]:
             st.markdown("### Expected Mini-stack Usage:")
             for i, rule in enumerate(st.session_state["mini_rules"]):
                 pct = rule.get("exposure_pct", 0.0) / 100.0
                 est = num_lineups * pct
                 st.caption(f"- Mini #{i+1}: {pct*100:.1f}% → ~{est:.1f} lineups")
+
     # ================================================================
     #                         BUILD LINEUPS TAB
     # ================================================================
