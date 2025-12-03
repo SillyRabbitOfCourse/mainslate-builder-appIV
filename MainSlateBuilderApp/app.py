@@ -334,33 +334,32 @@ def pick_mini_stack_players(
     runback_map: Dict[str, str],
 ):
     """
-    Mini-stack: Now selects EXACT PLAYERS instead of positions.
-    Still respects:
-      - cannot use stack teams
-      - cannot use runback teams
-      - cannot reuse players
-      - same-team or opposing-team logic
+    Select exact players specified in the mini-stack UI.
+    Enforces:
+      - Cannot reuse players
+      - Cannot intersect stack teams improperly
+      - Returns exactly two players
     """
 
+    # SAME TEAM
     if rule["type"] == "same_team":
         team = rule["team"]
         p1_name, p2_name = rule["players"]
 
-        # Lookup both players
         p1 = df[(df["Name"] == p1_name) & (df["TeamAbbrev"] == team)]
         p2 = df[(df["Name"] == p2_name) & (df["TeamAbbrev"] == team)]
 
         if p1.empty or p2.empty:
             return None
 
-        p1 = p1.iloc[0]
-        p2 = p2.iloc[0]
+        p1, p2 = p1.iloc[0], p2.iloc[0]
 
         if p1.ID in used_ids or p2.ID in used_ids:
             return None
 
         return [p1, p2]
 
+    # OPPOSING TEAMS
     elif rule["type"] == "opposing_teams":
         t1, t2 = rule["team1"], rule["team2"]
         p1_name, p2_name = rule["players"]
@@ -371,8 +370,7 @@ def pick_mini_stack_players(
         if p1.empty or p2.empty:
             return None
 
-        p1 = p1.iloc[0]
-        p2 = p2.iloc[0]
+        p1, p2 = p1.iloc[0], p2.iloc[0]
 
         if p1.ID in used_ids or p2.ID in used_ids:
             return None
@@ -592,6 +590,31 @@ def build_stack_lineup(
 
     if not (min_p <= count_primary <= max_p):
         return None
+
+
+
+    # ---------------------------------------------------
+    # MINI-STACK TEAM EXCLUSIVITY (PER-LINEUP ONLY)
+    # ---------------------------------------------------
+    if mini_rule is not None:
+        mini_ids = {p.ID for p in corr_players}
+
+        if mini_rule["type"] == "same_team":
+            team = mini_rule["team"]
+
+            df = df[
+                (df["TeamAbbrev"] != team) |
+                (df["ID"].isin(mini_ids))
+            ]
+
+        elif mini_rule["type"] == "opposing_teams":
+            t1 = mini_rule["team1"]
+            t2 = mini_rule["team2"]
+
+            df = df[
+                ((df["TeamAbbrev"] != t1) & (df["TeamAbbrev"] != t2)) |
+                (df["ID"].isin(mini_ids))
+            ]
 
     # ---------------------------------------------------
     # TEAM ISOLATION LOGIC
@@ -1022,6 +1045,9 @@ def run_app():
         # ================================================================
     #                          MINI-STACKS
     # ================================================================
+        # ================================================================
+    #                          MINI-STACKS
+    # ================================================================
     with tab_minis:
         st.subheader("Mini-stacks (secondary correlations)")
 
@@ -1068,7 +1094,7 @@ def run_app():
                     remove_idx.append(i)
                     continue
 
-                # SAME TEAM MINI-STACK
+                # SAME TEAM MINI STACK
                 if rule["type"] == "same_team":
 
                     rule["team"] = st.selectbox(
@@ -1100,7 +1126,7 @@ def run_app():
                             key=f"mini_player2_same_{i}",
                         )
 
-                # OPPOSING TEAM MINI-STACK
+                # OPPOSING TEAM MINI STACK
                 elif rule["type"] == "opposing_teams":
 
                     rule["team1"] = st.selectbox(
@@ -1111,7 +1137,7 @@ def run_app():
                         key=f"mini_team1_{i}",
                     )
 
-                    # Team2 = opponent auto-populated
+                    # Auto opponent
                     if rule["team1"] in opponent_map:
                         rule["team2"] = opponent_map[rule["team1"]]
                     else:
@@ -1119,19 +1145,8 @@ def run_app():
 
                     st.write(f"Team 2 (Opponent): **{rule['team2']}**")
 
-                    if rule["team1"]:
-                        p1_list = df_filtered[
-                            df_filtered["TeamAbbrev"] == rule["team1"]
-                        ]["Name"].tolist()
-                    else:
-                        p1_list = []
-
-                    if rule["team2"]:
-                        p2_list = df_filtered[
-                            df_filtered["TeamAbbrev"] == rule["team2"]
-                        ]["Name"].tolist()
-                    else:
-                        p2_list = []
+                    p1_list = df_filtered[df_filtered["TeamAbbrev"] == rule["team1"]]["Name"].tolist() if rule["team1"] else []
+                    p2_list = df_filtered[df_filtered["TeamAbbrev"] == rule["team2"]]["Name"].tolist() if rule["team2"] else []
 
                     rule["player1"] = st.selectbox(
                         "Player from Team 1:",
@@ -1149,7 +1164,7 @@ def run_app():
                         key=f"mini_player2_opp_{i}",
                     )
 
-        # Remove deleted
+        # Remove deleted minis
         if remove_idx:
             st.session_state["mini_rules"] = [
                 r for idx, r in enumerate(mini_rules) if idx not in remove_idx
@@ -1225,43 +1240,36 @@ def run_app():
             # -------------------------------------------
             # BUILD MINI_STACKS FROM UI RULES (PLAYER-BASED)
             # -------------------------------------------
+            # -------------------------------------------
+            # BUILD MINI_STACKS FROM UI (PLAYER-BASED)
+            # -------------------------------------------
             MINI_STACKS = []
             for rule in st.session_state.get("mini_rules", []):
                 pct = rule.get("exposure_pct", 0.0) / 100.0
                 if pct <= 0:
                     continue
 
-                # SAME TEAM MINI STACK
                 if rule["type"] == "same_team":
-                    if rule["team"] and rule.get("player1") and rule.get("player2"):
+                    if rule["team"] and rule["player1"] and rule["player2"]:
                         MINI_STACKS.append({
                             "type": "same_team",
                             "team": rule["team"],
                             "players": [rule["player1"], rule["player2"]],
                             "exposure": pct,
-                            "remaining": 0,  # filled later by init_mini_stack_state
                         })
 
-                # OPPOSING TEAMS MINI STACK
                 elif rule["type"] == "opposing_teams":
-                    if (
-                        rule["team1"] 
-                        and rule["team2"] 
-                        and rule.get("player1") 
-                        and rule.get("player2")
-                    ):
+                    if rule["team1"] and rule["team2"] and rule["player1"] and rule["player2"]:
                         MINI_STACKS.append({
                             "type": "opposing_teams",
                             "team1": rule["team1"],
                             "team2": rule["team2"],
                             "players": [rule["player1"], rule["player2"]],
                             "exposure": pct,
-                            "remaining": 0,
                         })
 
             mini_state = init_mini_stack_state(NUM_LINEUPS, MINI_STACKS)
 
-            # Helper for selecting a mini rule (unchanged)
             def pick_mini_rule(stack_team):
                 for r in mini_state:
                     if r["remaining"] <= 0:
