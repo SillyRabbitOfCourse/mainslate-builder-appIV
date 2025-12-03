@@ -670,17 +670,18 @@ def run_app():
     # ================================================================
     #                         STACK TEAMS TAB
     # ================================================================
+        # ================================================================
+    #                         STACK TEAMS TAB
+    # ================================================================
     with tab_stacks:
         st.subheader("Primary Stack Teams")
 
-        # User chooses which offenses to stack
         STACK_TEAMS = st.multiselect(
             "Select stack teams:",
             filtered_teams,
             default=[],
         )
 
-        # Reset configuration maps (safe because run_app reruns each request)
         STACK_EXPOSURES.clear()
         STACK_REQUIRED.clear()
         STACK_OPTIONAL.clear()
@@ -689,11 +690,19 @@ def run_app():
         if STACK_TEAMS:
             st.markdown("### Configure stack rules per selected team")
 
+        # DK caps for stack-team player selection
+        POS_CAPS = {
+            "QB": 1,
+            "RB": 3,
+            "WR": 4,
+            "TE": 2,
+            "DST": 1,
+        }
+
         for team in STACK_TEAMS:
             with st.expander(f"Stack Rules for {team}", expanded=False):
 
-                # ----------------------- DYNAMIC EXPOSURE CAP -----------------------
-                # Total exposure of all other teams
+                # ----------------------- EXPOSURE CAP -----------------------
                 used = sum(
                     STACK_EXPOSURES.get(t, 0.0)
                     for t in STACK_TEAMS if t != team
@@ -715,7 +724,6 @@ def run_app():
 
                 # ----------------------- MIN/MAX PLAYERS -----------------------
                 col1, col2 = st.columns(2)
-
                 mn = col1.number_input(
                     f"Min players from {team}",
                     min_value=1, max_value=9,
@@ -728,61 +736,48 @@ def run_app():
                     value=5,
                     key=f"max_{team}",
                 )
-
                 STACK_MIN_MAX[team] = (mn, mx)
 
-                # ----------------------- TEAM PLAYER LIST -----------------------
-                                # ----------------------- TEAM PLAYER LIST -----------------------
-                                # ----------------------- TEAM PLAYER LIST -----------------------
-                                # ----------------------- TEAM PLAYER LIST -----------------------
+                # ======================================================
+                #   TEAM STACK PLAYER SELECTION WITH POSITION LIMITS
+                # ======================================================
                 team_df = df_filtered[df_filtered["TeamAbbrev"] == team].copy()
                 team_players = team_df["Name"].tolist()
 
-                # ----------------------- FIND ALL TEAM QBs -----------------------
-                team_qbs = team_df[team_df["Position"] == "QB"]["Name"].tolist()
+                # Who was already chosen from this team?
+                already_required = STACK_REQUIRED.get(team, [])
+                already_optional = list(STACK_OPTIONAL.get(team, {}).keys())
+                already_chosen = already_required + already_optional
 
-                # Determine if ANY QB is already chosen
-                already_chosen_qbs = []
+                # Count positions used already
+                chosen_counts = {pos: 0 for pos in POS_CAPS}
+                for name in already_chosen:
+                    row = team_df[team_df["Name"] == name]
+                    if not row.empty:
+                        pos = row.iloc[0]["Position"]
+                        chosen_counts[pos] += 1
 
-                # QB required?
-                for p in STACK_REQUIRED.get(team, []):
-                    if p in team_qbs:
-                        already_chosen_qbs.append(p)
+                # Determine if a player is position-eligible
+                def is_position_allowed(name):
+                    row = team_df[team_df["Name"] == name]
+                    if row.empty:
+                        return False
+                    pos = row.iloc[0]["Position"]
+                    return chosen_counts[pos] < POS_CAPS[pos] or name in already_chosen
 
-                # QB optional?
-                for p in STACK_OPTIONAL.get(team, {}).keys():
-                    if p in team_qbs:
-                        already_chosen_qbs.append(p)
+                filtered_team_players = [
+                    p for p in team_players if is_position_allowed(p)
+                ]
 
-                # If ANY QB is chosen, hide ALL others
-                if already_chosen_qbs:
-                    allowed_qb = already_chosen_qbs[0]
-                    # Only the chosen QB remains visible
-                    team_qbs_visible = [allowed_qb]
-                else:
-                    # No QB chosen yet → all QBs allowed
-                    team_qbs_visible = team_qbs
-
-                # Filter allowed players for UI lists
-                def filter_qb(p):
-                    # If QB → must be the allowed QB
-                    if p in team_qbs:
-                        return p in team_qbs_visible
-                    return True
-
-                filtered_team_players = [p for p in team_players if filter_qb(p)]
-
-                # ----------------------- REQUIRED -----------------------
-                previously_optional = set(STACK_OPTIONAL.get(team, {}).keys())
+                # ----------------------- REQUIRED LIST -----------------------
+                optional_selected = set(already_optional)
 
                 req_available = [
-                    p for p in filtered_team_players
-                    if p not in previously_optional
+                    p for p in filtered_team_players if p not in optional_selected
                 ]
 
                 req_default = [
-                    p for p in STACK_REQUIRED.get(team, [])
-                    if p in req_available
+                    p for p in already_required if p in req_available
                 ]
 
                 req = st.multiselect(
@@ -793,15 +788,35 @@ def run_app():
                 )
                 STACK_REQUIRED[team] = req
 
-                # ----------------------- OPTIONAL -----------------------
+                # Update chosen position counts
+                chosen_counts = {pos: 0 for pos in POS_CAPS}
+                for name in (req + already_optional):
+                    row = team_df[team_df["Name"] == name]
+                    if not row.empty:
+                        pos = row.iloc[0]["Position"]
+                        chosen_counts[pos] += 1
+
+                # Recompute eligible players
+                def still_allowed(name):
+                    row = team_df[team_df["Name"] == name]
+                    if row.empty:
+                        return False
+                    pos = row.iloc[0]["Position"]
+                    return chosen_counts[pos] < POS_CAPS[pos] or name in already_optional
+
+                eligible_after_req = [
+                    p for p in filtered_team_players if still_allowed(p)
+                ]
+
+                # ----------------------- OPTIONAL LIST -----------------------
+                req_set = set(req)
+
                 optional_available = [
-                    p for p in filtered_team_players
-                    if p not in req
+                    p for p in eligible_after_req if p not in req_set
                 ]
 
                 last_opt_selected = [
-                    p for p in STACK_OPTIONAL.get(team, {}).keys()
-                    if p in optional_available
+                    p for p in already_optional if p in optional_available
                 ]
 
                 opt = st.multiselect(
@@ -811,7 +826,7 @@ def run_app():
                     key=f"opt_{team}",
                 )
 
-                # ----------------------- OPTIONAL SPRINKLE SLIDERS -----------------------
+                # ----------------------- SPRINKLE SLIDERS -----------------------
                 sprinkle_map = {}
                 for p in opt:
                     slider_key = f"sprinkle_pct_{team}_{p}"
@@ -824,10 +839,10 @@ def run_app():
                         1.0,
                         key=slider_key,
                     )
+
                     sprinkle_map[p] = pct / 100.0
 
                 STACK_OPTIONAL[team] = sprinkle_map
-
 
         # ----------------------- STACK SUMMARY -----------------------
         if STACK_TEAMS:
