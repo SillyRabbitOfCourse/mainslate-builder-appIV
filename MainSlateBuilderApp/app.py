@@ -774,8 +774,11 @@ def run_app():
     # ================================================================
     #                           RUN-BACKS TAB
     # ================================================================
+        # ================================================================
+    #                           RUN-BACKS TAB
+    # ================================================================
     with tab_runbacks:
-        st.subheader("Run-backs (Mode B: weighted, min/max aware)")
+        st.subheader("Run-backs")
 
         # Reset containers
         STACK_RUNBACK_TEAMS.clear()
@@ -786,22 +789,15 @@ def run_app():
 
         # Helper: compute locked position usage for stack team
         def compute_locked_positions_for_stack(team: str):
-            """
-            Counts how many positional slots are locked by:
-              - Required players
-              - Optional players with 100% sprinkle
-            """
-            # DK slot caps (stack team can occupy these BEFORE runbacks)
             caps = {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "DST": 1}
-
             locked = {pos: 0 for pos in caps}
 
-            # Required players
+            # Required
             req = STACK_REQUIRED.get(team, [])
             if req:
                 df_req = df_filtered[
-                    (df_filtered["TeamAbbrev"] == team)
-                    & (df_filtered["Name"].isin(req))
+                    (df_filtered["TeamAbbrev"] == team) &
+                    (df_filtered["Name"].isin(req))
                 ]
                 for pos in caps:
                     locked[pos] += (df_req["Position"] == pos).sum()
@@ -811,8 +807,8 @@ def run_app():
             always = [p for p, pct in opt.items() if pct >= 1.0]
             if always:
                 df_always = df_filtered[
-                    (df_filtered["TeamAbbrev"] == team)
-                    & (df_filtered["Name"].isin(always))
+                    (df_filtered["TeamAbbrev"] == team) &
+                    (df_filtered["Name"].isin(always))
                 ]
                 for pos in caps:
                     locked[pos] += (df_always["Position"] == pos).sum()
@@ -829,98 +825,96 @@ def run_app():
 
                 # Validate opponent
                 if not opp or opp not in df_filtered["TeamAbbrev"].unique():
-                    st.info(f"No valid opponent for {team}. Runbacks disabled.")
+                    st.info(f"No valid opponent for {team}.")
                     STACK_RUNBACK_TEAMS[team] = ""
                     STACK_RUNBACKS[team] = {}
                     STACK_RUNBACK_MIN_MAX[team] = (0, 0)
                     continue
 
-                # Assign opponent
+                # Assign
                 STACK_RUNBACK_TEAMS[team] = opp
                 st.write(f"**Opponent:** {opp}")
 
-                # -------------------------------------
-                # Determine slot availability (big fix)
-                # -------------------------------------
+                # Slot availability
                 locked, caps = compute_locked_positions_for_stack(team)
-
                 remaining = {
                     "RB": max(0, caps["RB"] - locked["RB"]),
                     "WR": max(0, caps["WR"] - locked["WR"]),
                     "TE": max(0, caps["TE"] - locked["TE"]),
-                    "DST": max(0, caps["DST"] - locked["DST"]),  # DST runbacks allowed
+                    "DST": max(0, caps["DST"] - locked["DST"]),
                 }
 
-                # Opponent player pool (no QB)
+                # Opponent pool (no QB)
                 opp_pool = df_filtered[
-                    (df_filtered["TeamAbbrev"] == opp)
-                    & (df_filtered["Position"] != "QB")
+                    (df_filtered["TeamAbbrev"] == opp) &
+                    (df_filtered["Position"] != "QB")
                 ].copy()
 
                 # Remove impossible positions
-                if remaining["RB"] == 0:
-                    opp_pool = opp_pool[opp_pool["Position"] != "RB"]
-                if remaining["WR"] == 0:
-                    opp_pool = opp_pool[opp_pool["Position"] != "WR"]
-                if remaining["TE"] == 0:
-                    opp_pool = opp_pool[opp_pool["Position"] != "TE"]
-                if remaining["DST"] == 0:
-                    opp_pool = opp_pool[opp_pool["Position"] != "DST"]
+                for pos in ["RB", "WR", "TE", "DST"]:
+                    if remaining[pos] == 0:
+                        opp_pool = opp_pool[opp_pool["Position"] != pos]
 
-                # Get names
                 opp_names = sorted(opp_pool["Name"].unique().tolist())
 
                 if not opp_names:
-                    st.info(
-                        f"No valid run-back players remain for opponent {opp} "
-                        "due to positional slot constraints."
-                    )
+                    st.info("No eligible run-back players remain.")
                     STACK_RUNBACKS[team] = {}
                     STACK_RUNBACK_MIN_MAX[team] = (0, 0)
                     continue
 
-                # -------------------------------------
-                # RUNBACK SELECTION
-                # -------------------------------------
-                # Auto-clean selected players
+                # Player selection
                 prev = st.session_state.get(f"rbsel_{team}", [])
                 prev = [p for p in prev if p in opp_names]
 
                 rb_sel = st.multiselect(
-                    f"Select run-back candidates from {opp}:",
+                    f"Run-back players from {opp}:",
                     opp_names,
                     default=prev,
                     key=f"rbsel_{team}",
                 )
 
-                # -------------------------------------
-                # Min/max runbacks
-                # -------------------------------------
                 max_possible = len(rb_sel)
 
-                mn_default = min(st.session_state.get(f"rbmin_{team}", 0), max_possible)
-                mx_default = min(st.session_state.get(f"rbmax_{team}", 1), max_possible)
+                # Get stored values safely
+                stored_min = st.session_state.get(f"rbmin_{team}", 0)
+                stored_max = st.session_state.get(f"rbmax_{team}", 1)
 
+                # Cap stored values by max_possible
+                stored_min = min(stored_min, max_possible)
+                stored_max = min(stored_max, max_possible)
+
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                # AUTO-ADJUST BEHAVIOR — NO ERRORS EVER
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+                # Step 1: user picks min
                 mn = st.number_input(
                     f"Min run-backs for {team}",
                     min_value=0,
                     max_value=max_possible,
-                    value=mn_default,
+                    value=stored_min,
                     key=f"rbmin_{team}",
                 )
 
+                # Step 2: force max >= min (auto adjustment)
+                if stored_max < mn:
+                    stored_max = mn
+                    st.session_state[f"rbmax_{team}"] = mn  # auto adjust
+
+                # Step 3: user can still expand max after auto-adjust
                 mx = st.number_input(
                     f"Max run-backs for {team}",
                     min_value=mn,
                     max_value=max_possible,
-                    value=mx_default,
+                    value=stored_max,
                     key=f"rbmax_{team}",
                 )
 
                 STACK_RUNBACK_MIN_MAX[team] = (mn, mx)
 
                 # -------------------------------------
-                # Mode B — Per-player weight sliders
+                # Mode B weight sliders
                 # -------------------------------------
                 rb_map = {}
 
@@ -929,16 +923,13 @@ def run_app():
                     stored_val = st.session_state.get(slider_key, 0.0)
 
                     if mn == 1 and mx == 1:
-                        # EXACTLY one runback: enforce sum(weights) ≤ 100%
+                        # EXACTLY 1 runback → sum(weights) ≤ 1
                         used = 0.0
                         for other in rb_sel:
                             if other == p:
                                 continue
                             other_key = f"rbpct_{team}_{other}"
-                            if other in rb_map:
-                                used += rb_map[other]
-                            else:
-                                used += st.session_state.get(other_key, 0.0) / 100.0
+                            used += rb_map.get(other, st.session_state.get(other_key, 0.0) / 100.0)
 
                         remaining = max(0.0, 1.0 - used)
                         current = min(stored_val, remaining * 100.0)
@@ -954,7 +945,6 @@ def run_app():
                         rb_map[p] = pct / 100.0
 
                     else:
-                        # Relative weights (no sum constraint)
                         pct = st.slider(
                             f"{p} weight (relative)",
                             0.0, 100.0,
@@ -966,24 +956,23 @@ def run_app():
 
                 STACK_RUNBACKS[team] = rb_map
 
-                # -------------------------------------
-                # DST Sprinkle toggle + slider
-                # -------------------------------------
+                # DST Sprinkle
                 inc_dst = st.checkbox(
                     f"Allow {team} DST sprinkle?",
                     key=f"dstinc_{team}",
                 )
                 STACK_INCLUDE_DST[team] = inc_dst
 
-                dst_stored = st.session_state.get(f"dstpct_{team}", 0.0)
+                dst_val = st.session_state.get(f"dstpct_{team}", 0.0)
                 dst_pct = st.slider(
                     f"{team} DST sprinkle chance (%)",
                     0.0, 100.0,
-                    dst_stored,
+                    dst_val,
                     1.0,
                     key=f"dstpct_{team}",
                 )
                 STACK_DST_PERCENT[team] = dst_pct / 100.0
+
     # ================================================================
     #                         MINI-STACKS TAB
     # ================================================================
