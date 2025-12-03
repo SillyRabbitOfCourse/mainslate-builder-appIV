@@ -565,7 +565,6 @@ def build_stack_lineup(
 # ================================================================
 
 def run_app():
-    global NUM_LINEUPS, SALARY_CAP, MIN_SALARY, RANDOM_SEED
     global STACK_TEAMS, STACK_EXPOSURES, STACK_REQUIRED, STACK_OPTIONAL, STACK_MIN_MAX
     global STACK_RUNBACK_TEAMS, STACK_RUNBACKS, STACK_RUNBACK_MIN_MAX
     global STACK_INCLUDE_DST, STACK_DST_PERCENT
@@ -1195,12 +1194,12 @@ def run_app():
         st.subheader("Generate Lineups")
 
         if st.button("🚀 Build Lineups"):
-            global NUM_LINEUPS, SALARY_CAP, MIN_SALARY, RANDOM_SEED
 
             NUM_LINEUPS = int(num_lineups)
             SALARY_CAP = int(salary_cap)
             MIN_SALARY = int(min_salary)
             RANDOM_SEED = None if seed < 0 else int(seed)
+
 
             if RANDOM_SEED is not None:
                 random.seed(RANDOM_SEED)
