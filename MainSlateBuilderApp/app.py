@@ -376,21 +376,23 @@ def build_stack_lineup(
     primary_team: str,
     mini_rule: Dict | None,
     opponent_map: Dict[str, str],
-):
+) -> List[Dict] | None:
     """
     Build one valid lineup for the specified stack team.
     Applies:
       - Stack-required players
       - Optional sprinkle players
-      - Run-backs (Mode B)
+      - Run-backs (correct opponent only)
       - Mini-stacks (if allowed)
-      - Mini team exclusivity (no extra teammates from those mini teams)
-      - Team isolation rules for filler
+      - Team isolation rules
       - Salary cap checks
       - FLEX must be RB/WR/TE (no DST)
+      - NEW: runbacks + minis can occupy FLEX, prioritized intelligently
     """
 
-    # ------------------ REQUIRED STACK PLAYERS ------------------
+    # ---------------------------------------------------
+    # PRIMARY STACK REQUIRED PLAYERS
+    # ---------------------------------------------------
     required_list = STACK_REQUIRED.get(primary_team, [])
     stack_players: List[pd.Series] = []
 
@@ -400,145 +402,216 @@ def build_stack_lineup(
             return None
         stack_players.append(row.iloc[0])
 
-    # ------------------ OPTIONAL SPRINKLES ------------------
+    # ---------------------------------------------------
+    # OPTIONAL SPRINKLES
+    # ---------------------------------------------------
     sprinkle_names = sample_optional_players(primary_team)
     for name in sprinkle_names:
         row = df[(df["Name"] == name) & (df["TeamAbbrev"] == primary_team)]
         if not row.empty:
             stack_players.append(row.iloc[0])
 
-    # ------------------ RUNBACKS (MODE B) ------------------
+    # ---------------------------------------------------
+    # RUN-BACK HANDLING
+    # ---------------------------------------------------
     runbacks = select_runbacks_for_stack(primary_team, df)
-    if runbacks is None:
+    if runbacks is None:  # could not satisfy min runbacks
         return None
-    stack_players.extend(runbacks)
 
-    # ------------------ DST SPRINKLE ------------------
+    for rb in runbacks:
+        stack_players.append(rb)
+
+    # ---------------------------------------------------
+    # DST SPRINKLE (from primary team only)
+    # ---------------------------------------------------
     dst_row = maybe_add_dst_to_stack(primary_team, df)
     if dst_row is not None:
         stack_players.append(dst_row)
 
-    # Track used IDs so we don't duplicate
-    used_ids = {p.ID for p in stack_players if hasattr(p, "ID")}
-
-    # ------------------ MINI-STACK PLAYERS ------------------
+    # ---------------------------------------------------
+    # MINI-STACK PLAYERS (if any rule was selected)
+    # ---------------------------------------------------
     corr_players: List[pd.Series] = []
     if mini_rule is not None:
-        pick = pick_mini_stack_players(mini_rule, df, used_ids)
+        pick = pick_mini_stack_players(
+            mini_rule,
+            df,
+            used_ids=set(),          # we haven't assigned anyone yet
+            stack_teams=STACK_TEAMS,
+            runback_map=STACK_RUNBACK_TEAMS,
+        )
         if pick is None:
             return None
         for p in pick:
             corr_players.append(p)
-            used_ids.add(p.ID)
 
-    # Combine stack + mini prior to position fill
+    # Combine everything prior to filling positions
     base_players = stack_players + corr_players
 
-    # ------------------ STACK MIN/MAX ENFORCEMENT ------------------
-    min_p, max_p = STACK_MIN_MAX.get(primary_team, (2, 5))
-    count_primary = sum(1 for p in base_players if p.TeamAbbrev == primary_team)
-    if not (min_p <= count_primary <= max_p):
-        return None
-
-    # ------------------ MINI-STACK TEAM EXCLUSIVITY (PER-LINEUP) ------------------
-    df2 = df.copy()
-    if mini_rule is not None and corr_players:
-        mini_ids = {p.ID for p in corr_players}
-        if mini_rule["type"] == "same_team":
-            team = mini_rule["team"]
-            df2 = df2[
-                (df2["TeamAbbrev"] != team) |
-                (df2["ID"].isin(mini_ids))
-            ]
-        elif mini_rule["type"] == "opposing_teams":
-            t1 = mini_rule["team1"]
-            t2 = mini_rule["team2"]
-            df2 = df2[
-                ((df2["TeamAbbrev"] != t1) & (df2["TeamAbbrev"] != t2)) |
-                (df2["ID"].isin(mini_ids))
-            ]
-
-    # ------------------ POSITION GROUPS FROM CURRENT BASE ------------------
+    # ---------------------------------------------------
+    # IDENTIFY STACK / CORRELATED PLAYERS BY POSITION
+    # ---------------------------------------------------
     stack_QBs = [p for p in base_players if p.Position == "QB"]
     stack_RBs = [p for p in base_players if p.Position == "RB"]
     stack_WRs = [p for p in base_players if p.Position == "WR"]
     stack_TEs = [p for p in base_players if p.Position == "TE"]
     stack_DSTs = [p for p in base_players if p.Position == "DST"]
 
-    # ------------------ TEAM ISOLATION FOR FILLER ------------------
+    # ---------------------------------------------------
+    # ENFORCE PRIMARY TEAM MIN/MAX
+    # ---------------------------------------------------
+    min_p, max_p = STACK_MIN_MAX.get(primary_team, (2, 5))
+    count_primary = sum(1 for p in base_players if p.TeamAbbrev == primary_team)
+    if not (min_p <= count_primary <= max_p):
+        return None
+
+    # ---------------------------------------------------
+    # TEAM ISOLATION LOGIC FOR FILLERS
+    # ---------------------------------------------------
     stack_set = set(STACK_TEAMS)
     runback_set = set(STACK_RUNBACK_TEAMS.values())
 
-    filler_df = df2[
-        (~df2["TeamAbbrev"].isin(stack_set)) &
-        (~df2["TeamAbbrev"].isin(runback_set))
+    filler_df = df[
+        (~df["TeamAbbrev"].isin(stack_set)) &
+        (~df["TeamAbbrev"].isin(runback_set))
     ]
 
-    # Helper to get a pool for a position excluding already-used IDs
+    # players become "used" only once they are actually assigned to a slot
+    used_ids: set = set()
+
     def pool(pos: str):
-        subset = filler_df[filler_df["Position"] == pos]
+        subset = filler_df[filler_df.Position == pos]
         return subset[~subset.ID.isin(used_ids)].reset_index(drop=True)
 
-    # ------------------ FILL QB ------------------
+    # ---------------------------------------------------
+    # FILL QB
+    # ---------------------------------------------------
     if stack_QBs:
         qb = stack_QBs[0]
     else:
-        qb_pool = pool("QB")
-        if qb_pool.empty:
+        p = pool("QB")
+        if p.empty:
             return None
-        qb = qb_pool.sample(1).iloc[0]
+        qb = p.sample(1).iloc[0]
+
     used_ids.add(qb.ID)
 
-    # ------------------ FILL RB1 & RB2 ------------------
+    # ---------------------------------------------------
+    # FILL RB1 & RB2
+    # ---------------------------------------------------
     rbs = stack_RBs.copy()
+    # fill remaining RB slots from filler
     while len(rbs) < 2:
-        rb_pool = pool("RB")
-        if rb_pool.empty:
+        p = pool("RB")
+        if p.empty:
             return None
-        row = rb_pool.sample(1).iloc[0]
+        row = p.sample(1).iloc[0]
         rbs.append(row)
         used_ids.add(row.ID)
 
-    # ------------------ FILL WR1, WR2, WR3 ------------------
+    # ---------------------------------------------------
+    # FILL WR1, WR2, WR3
+    # ---------------------------------------------------
     wrs = stack_WRs.copy()
     while len(wrs) < 3:
-        wr_pool = pool("WR")
-        if wr_pool.empty:
+        p = pool("WR")
+        if p.empty:
             return None
-        row = wr_pool.sample(1).iloc[0]
+        row = p.sample(1).iloc[0]
         wrs.append(row)
         used_ids.add(row.ID)
 
-    # ------------------ FILL TE ------------------
+    # ---------------------------------------------------
+    # FILL TE
+    # ---------------------------------------------------
     if stack_TEs:
         te = stack_TEs[0]
     else:
-        te_pool = pool("TE")
-        if te_pool.empty:
+        p = pool("TE")
+        if p.empty:
             return None
-        te = te_pool.sample(1).iloc[0]
+        te = p.sample(1).iloc[0]
+
     used_ids.add(te.ID)
 
-    # ------------------ FILL DST ------------------
+    # ---------------------------------------------------
+    # FILL DST
+    # ---------------------------------------------------
     if stack_DSTs:
         dst = stack_DSTs[0]
     else:
-        dst_pool = pool("DST")
-        if dst_pool.empty:
+        p = pool("DST")
+        if p.empty:
             return None
-        dst = dst_pool.sample(1).iloc[0]
+        dst = p.sample(1).iloc[0]
+
     used_ids.add(dst.ID)
 
-    # ------------------ FILL FLEX (NO DST, ONLY RB/WR/TE) ------------------
-    flex_pool = filler_df[
-        (filler_df["Position"].isin(FLEX_ELIGIBLE)) &
-        (~filler_df.ID.isin(used_ids))
-    ]
-    if flex_pool.empty:
-        return None
-    flex = flex_pool.sample(1).iloc[0]
+    # ---------------------------------------------------
+    # FILL FLEX  (NO DST ALLOWED)
+    # PRIORITY: mini-stack players → runback players → other base → filler
+    # ---------------------------------------------------
+    # Determine which teams are mini-stack teams (if any)
+    mini_teams = set()
+    if mini_rule is not None:
+        if mini_rule["type"] == "same_team":
+            mini_teams.add(mini_rule["team"])
+        elif mini_rule["type"] == "opposing_teams":
+            mini_teams.add(mini_rule["team1"])
+            mini_teams.add(mini_rule["team2"])
 
-    # ------------------ ASSEMBLE FINAL LINEUP ------------------
+    # Determine runback team for this stack
+    runback_team = STACK_RUNBACK_TEAMS.get(primary_team, "")
+
+    # Build candidate buckets from base_players
+    mini_flex_candidates = [
+        p for p in base_players
+        if (p.Position in FLEX_ELIGIBLE) and
+           (p.ID not in used_ids) and
+           (p.TeamAbbrev in mini_teams)
+    ]
+
+    runback_flex_candidates = [
+        p for p in base_players
+        if (p.Position in FLEX_ELIGIBLE) and
+           (p.ID not in used_ids) and
+           (p.TeamAbbrev == runback_team)
+    ]
+
+    other_base_flex_candidates = [
+        p for p in base_players
+        if (p.Position in FLEX_ELIGIBLE) and
+           (p.ID not in used_ids) and
+           (p.TeamAbbrev not in mini_teams) and
+           (p.TeamAbbrev != runback_team)
+    ]
+
+    flex = None
+
+    # 1) Prefer mini-stack correlated players
+    if mini_flex_candidates:
+        flex = random.choice(mini_flex_candidates)
+    # 2) Then prefer runback players
+    elif runback_flex_candidates:
+        flex = random.choice(runback_flex_candidates)
+    # 3) Then other base stack players
+    elif other_base_flex_candidates:
+        flex = random.choice(other_base_flex_candidates)
+    else:
+        # 4) Fallback to filler if no base player can take FLEX
+        flex_pool = filler_df[
+            (filler_df.Position.isin(FLEX_ELIGIBLE)) &
+            (~filler_df.ID.isin(used_ids))
+        ]
+        if flex_pool.empty:
+            return None
+        flex = flex_pool.sample(1).iloc[0]
+
+    used_ids.add(flex.ID)
+
+    # ---------------------------------------------------
+    # ASSEMBLE FINAL LINEUP
+    # ---------------------------------------------------
     lineup = [
         {"Slot": "QB",   "Player": qb},
         {"Slot": "RB1",  "Player": rbs[0]},
@@ -551,58 +624,14 @@ def build_stack_lineup(
         {"Slot": "FLEX", "Player": flex},
     ]
 
-    # ------------------ SALARY VALIDATION ------------------
-    total_salary = sum(entry["Player"].Salary for entry in lineup)
-    if not (MIN_SALARY <= total_salary <= SALARY_CAP):
+    # ---------------------------------------------------
+    # SALARY VALIDATION
+    # ---------------------------------------------------
+    total = sum([entry["Player"].Salary for entry in lineup])
+    if not (MIN_SALARY <= total <= SALARY_CAP):
         return None
 
     return lineup
-
-
-# ================================================================
-#                  GLOBAL POSITION ANALYZER (NEW)
-# ================================================================
-
-def analyze_global_positions(df, stack_required, stack_optional):
-    """
-    Computes global slot usage + availability across the entire build.
-    This becomes the single source of truth for all tabs.
-    """
-    POS_CAPS = {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "DST": 1}
-    used = {pos: 0 for pos in POS_CAPS}
-    available = {pos: 0 for pos in POS_CAPS}
-
-    # Count available players in the filtered pool
-    for pos in POS_CAPS:
-        available[pos] = len(df[df["Position"] == pos])
-
-    # Count required players across ALL stacks
-    for team in stack_required:
-        for p in stack_required[team]:
-            row = df[(df["Name"] == p)]
-            if not row.empty:
-                pos = row.iloc[0]["Position"]
-                used[pos] += 1
-
-    # Count optional 100% sprinkles
-    for team in stack_optional:
-        for p, pct in stack_optional[team].items():
-            if pct >= 1.0:
-                row = df[(df["Name"] == p)]
-                if not row.empty:
-                    pos = row.iloc[0]["Position"]
-                    used[pos] += 1
-
-    # Compute remaining capacity
-    remain = {pos: POS_CAPS[pos] - used[pos] for pos in POS_CAPS}
-
-    return {
-        "caps": POS_CAPS,
-        "used": used,
-        "remain": remain,
-        "available": available
-    }
-
 
 
 
