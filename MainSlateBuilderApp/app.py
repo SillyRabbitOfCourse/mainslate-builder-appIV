@@ -129,49 +129,6 @@ def apply_global_team_filters(
 
     return filtered_df.reset_index(drop=True)
 
-# ================================================================
-#                  GLOBAL POSITION ANALYZER (NEW)
-# ================================================================
-
-def analyze_global_positions(df, stack_required, stack_optional):
-    """
-    Computes global slot usage + availability across the entire build.
-    This becomes the single source of truth for all tabs.
-    """
-    POS_CAPS = {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "DST": 1}
-    used = {pos: 0 for pos in POS_CAPS}
-    available = {pos: 0 for pos in POS_CAPS}
-
-    # Count available players in the filtered pool
-    for pos in POS_CAPS:
-        available[pos] = len(df[df["Position"] == pos])
-
-    # Count required players across ALL stacks
-    for team in stack_required:
-        for p in stack_required[team]:
-            row = df[(df["Name"] == p)]
-            if not row.empty:
-                pos = row.iloc[0]["Position"]
-                used[pos] += 1
-
-    # Count optional 100% sprinkles
-    for team in stack_optional:
-        for p, pct in stack_optional[team].items():
-            if pct >= 1.0:
-                row = df[(df["Name"] == p)]
-                if not row.empty:
-                    pos = row.iloc[0]["Position"]
-                    used[pos] += 1
-
-    # Compute remaining capacity
-    remain = {pos: POS_CAPS[pos] - used[pos] for pos in POS_CAPS}
-
-    return {
-        "caps": POS_CAPS,
-        "used": used,
-        "remain": remain,
-        "available": available
-    }
 
 # ================================================================
 #                  POSITION-SPECIFIC DATA GROUPS
@@ -479,9 +436,9 @@ def build_stack_lineup(
         pick = pick_mini_stack_players(
             mini_rule,
             df,
-            used_ids=set(),          # we haven't assigned anyone yet
-            stack_teams=STACK_TEAMS,
-            runback_map=STACK_RUNBACK_TEAMS,
+            set(),                  # used_ids starts empty for minis
+            STACK_TEAMS,
+            STACK_RUNBACK_TEAMS,
         )
         if pick is None:
             return None
@@ -676,6 +633,49 @@ def build_stack_lineup(
 
     return lineup
 
+# ================================================================
+#                  GLOBAL POSITION ANALYZER (NEW)
+# ================================================================
+
+def analyze_global_positions(df, stack_required, stack_optional):
+    """
+    Computes global slot usage + availability across the entire build.
+    This becomes the single source of truth for all tabs.
+    """
+    POS_CAPS = {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "DST": 1}
+    used = {pos: 0 for pos in POS_CAPS}
+    available = {pos: 0 for pos in POS_CAPS}
+
+    # Count available players in the filtered pool
+    for pos in POS_CAPS:
+        available[pos] = len(df[df["Position"] == pos])
+
+    # Count required players across ALL stacks
+    for team in stack_required:
+        for p in stack_required[team]:
+            row = df[(df["Name"] == p)]
+            if not row.empty:
+                pos = row.iloc[0]["Position"]
+                used[pos] += 1
+
+    # Count optional 100% sprinkles
+    for team in stack_optional:
+        for p, pct in stack_optional[team].items():
+            if pct >= 1.0:
+                row = df[(df["Name"] == p)]
+                if not row.empty:
+                    pos = row.iloc[0]["Position"]
+                    used[pos] += 1
+
+    # Compute remaining capacity
+    remain = {pos: POS_CAPS[pos] - used[pos] for pos in POS_CAPS}
+
+    return {
+        "caps": POS_CAPS,
+        "used": used,
+        "remain": remain,
+        "available": available
+    }
 
 
 # ================================================================
