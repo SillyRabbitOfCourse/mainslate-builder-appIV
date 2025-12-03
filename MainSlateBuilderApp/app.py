@@ -733,45 +733,55 @@ def run_app():
 
                 # ----------------------- TEAM PLAYER LIST -----------------------
                                 # ----------------------- TEAM PLAYER LIST -----------------------
+                                # ----------------------- TEAM PLAYER LIST -----------------------
                 team_players = df_filtered[df_filtered["TeamAbbrev"] == team]["Name"].tolist()
 
                 # ----------------------- REQUIRED PLAYERS -----------------------
-                # Remove any previously-selected optional players from this list
+                # Remove any currently-selected optional players from the required list
                 previously_optional = set(STACK_OPTIONAL.get(team, {}).keys())
 
                 req_available = [p for p in team_players if p not in previously_optional]
 
+                req_default = [
+                    p for p in STACK_REQUIRED.get(team, []) if p in req_available
+                ]
+
                 req = st.multiselect(
                     "Required players:",
                     req_available,
-                    default=[p for p in STACK_REQUIRED.get(team, []) if p in req_available],
+                    default=req_default,
                     key=f"req_{team}",
                 )
                 STACK_REQUIRED[team] = req
 
                 # ----------------------- OPTIONAL PLAYERS -----------------------
-                # Remove required players from optional selection
+                # Remove required players from the optional list
                 optional_available = [p for p in team_players if p not in req]
 
-                opt_selected_last = list(STACK_OPTIONAL.get(team, {}).keys())
-                opt_selected_last = [p for p in opt_selected_last if p in optional_available]
+                last_opt_selected = list(STACK_OPTIONAL.get(team, {}).keys())
+                last_opt_selected = [
+                    p for p in last_opt_selected if p in optional_available
+                ]
 
                 opt = st.multiselect(
                     "Optional sprinkle players:",
                     optional_available,
-                    default=opt_selected_last,
+                    default=last_opt_selected,
                     key=f"opt_{team}",
                 )
 
-                # Optional sprinkle sliders
+                # ----------------------- OPTIONAL SPRINKLE SLIDERS -----------------------
                 sprinkle_map = {}
                 for p in opt:
+                    slider_key = f"sprinkle_pct_{team}_{p}"
+                    stored_val = st.session_state.get(slider_key, 0.0)
+
                     pct = st.slider(
                         f"{p} sprinkle chance (%)",
                         0.0, 100.0,
-                        ST_SESSION.get(f"sprinkle_pct_{team}_{p}", 0.0),
+                        stored_val,
                         1.0,
-                        key=f"sprinkle_pct_{team}_{p}",
+                        key=slider_key,
                     )
                     sprinkle_map[p] = pct / 100.0
 
