@@ -732,35 +732,51 @@ def run_app():
                 STACK_MIN_MAX[team] = (mn, mx)
 
                 # ----------------------- TEAM PLAYER LIST -----------------------
+                                # ----------------------- TEAM PLAYER LIST -----------------------
                 team_players = df_filtered[df_filtered["TeamAbbrev"] == team]["Name"].tolist()
 
-                # Required players (QB allowed)
+                # ----------------------- REQUIRED PLAYERS -----------------------
+                # Remove any previously-selected optional players from this list
+                previously_optional = set(STACK_OPTIONAL.get(team, {}).keys())
+
+                req_available = [p for p in team_players if p not in previously_optional]
+
                 req = st.multiselect(
                     "Required players:",
-                    team_players,
+                    req_available,
+                    default=[p for p in STACK_REQUIRED.get(team, []) if p in req_available],
                     key=f"req_{team}",
                 )
                 STACK_REQUIRED[team] = req
 
-                # Optional sprinkle players (with %)
+                # ----------------------- OPTIONAL PLAYERS -----------------------
+                # Remove required players from optional selection
+                optional_available = [p for p in team_players if p not in req]
+
+                opt_selected_last = list(STACK_OPTIONAL.get(team, {}).keys())
+                opt_selected_last = [p for p in opt_selected_last if p in optional_available]
+
                 opt = st.multiselect(
                     "Optional sprinkle players:",
-                    team_players,
+                    optional_available,
+                    default=opt_selected_last,
                     key=f"opt_{team}",
                 )
 
+                # Optional sprinkle sliders
                 sprinkle_map = {}
                 for p in opt:
                     pct = st.slider(
                         f"{p} sprinkle chance (%)",
                         0.0, 100.0,
-                        0.0,
+                        ST_SESSION.get(f"sprinkle_pct_{team}_{p}", 0.0),
                         1.0,
                         key=f"sprinkle_pct_{team}_{p}",
                     )
                     sprinkle_map[p] = pct / 100.0
 
                 STACK_OPTIONAL[team] = sprinkle_map
+
 
         # ----------------------- STACK SUMMARY -----------------------
         if STACK_TEAMS:
