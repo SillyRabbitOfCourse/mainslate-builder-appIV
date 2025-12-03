@@ -734,16 +734,55 @@ def run_app():
                 # ----------------------- TEAM PLAYER LIST -----------------------
                                 # ----------------------- TEAM PLAYER LIST -----------------------
                                 # ----------------------- TEAM PLAYER LIST -----------------------
-                team_players = df_filtered[df_filtered["TeamAbbrev"] == team]["Name"].tolist()
+                                # ----------------------- TEAM PLAYER LIST -----------------------
+                team_df = df_filtered[df_filtered["TeamAbbrev"] == team].copy()
+                team_players = team_df["Name"].tolist()
 
-                # ----------------------- REQUIRED PLAYERS -----------------------
-                # Remove any currently-selected optional players from the required list
+                # ----------------------- FIND ALL TEAM QBs -----------------------
+                team_qbs = team_df[team_df["Position"] == "QB"]["Name"].tolist()
+
+                # Determine if ANY QB is already chosen
+                already_chosen_qbs = []
+
+                # QB required?
+                for p in STACK_REQUIRED.get(team, []):
+                    if p in team_qbs:
+                        already_chosen_qbs.append(p)
+
+                # QB optional?
+                for p in STACK_OPTIONAL.get(team, {}).keys():
+                    if p in team_qbs:
+                        already_chosen_qbs.append(p)
+
+                # If ANY QB is chosen, hide ALL others
+                if already_chosen_qbs:
+                    allowed_qb = already_chosen_qbs[0]
+                    # Only the chosen QB remains visible
+                    team_qbs_visible = [allowed_qb]
+                else:
+                    # No QB chosen yet → all QBs allowed
+                    team_qbs_visible = team_qbs
+
+                # Filter allowed players for UI lists
+                def filter_qb(p):
+                    # If QB → must be the allowed QB
+                    if p in team_qbs:
+                        return p in team_qbs_visible
+                    return True
+
+                filtered_team_players = [p for p in team_players if filter_qb(p)]
+
+                # ----------------------- REQUIRED -----------------------
                 previously_optional = set(STACK_OPTIONAL.get(team, {}).keys())
 
-                req_available = [p for p in team_players if p not in previously_optional]
+                req_available = [
+                    p for p in filtered_team_players
+                    if p not in previously_optional
+                ]
 
                 req_default = [
-                    p for p in STACK_REQUIRED.get(team, []) if p in req_available
+                    p for p in STACK_REQUIRED.get(team, [])
+                    if p in req_available
                 ]
 
                 req = st.multiselect(
@@ -754,13 +793,15 @@ def run_app():
                 )
                 STACK_REQUIRED[team] = req
 
-                # ----------------------- OPTIONAL PLAYERS -----------------------
-                # Remove required players from the optional list
-                optional_available = [p for p in team_players if p not in req]
+                # ----------------------- OPTIONAL -----------------------
+                optional_available = [
+                    p for p in filtered_team_players
+                    if p not in req
+                ]
 
-                last_opt_selected = list(STACK_OPTIONAL.get(team, {}).keys())
                 last_opt_selected = [
-                    p for p in last_opt_selected if p in optional_available
+                    p for p in STACK_OPTIONAL.get(team, {}).keys()
+                    if p in optional_available
                 ]
 
                 opt = st.multiselect(
