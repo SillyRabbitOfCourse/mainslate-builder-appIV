@@ -1187,19 +1187,269 @@ def run_app():
                 )
                 STACK_DST_PERCENT[team] = dst_pct / 100.0
 
+
     # ================================================================
     #                         MINI-STACKS TAB
     # ================================================================
-        # ================================================================
-    #                         MINI-STACKS TAB
-    # ================================================================
-        # ================================================================
-    #                         MINI-STACKS TAB
-    # ================================================================
-        # ================================================================
-    #                         MINI-STACKS TAB
-    # ================================================================
-        # ================================================================
+    with tab_minis:
+        st.subheader("Mini-stacks (secondary correlations)")
+
+        # Ensure list exists
+        if "mini_rules" not in st.session_state:
+            st.session_state["mini_rules"] = []
+
+        mini_rules = st.session_state["mini_rules"]
+
+        # Buttons to add mini rules
+        col_add1, col_add2 = st.columns(2)
+        with col_add1:
+            if st.button("➕ Add same-team mini-stack"):
+                mini_rules.append({
+                    "type": "same_team",
+                    "team": "",
+                    "player1": "",
+                    "player2": "",
+                    "exposure_pct": 0.0,
+                })
+        with col_add2:
+            if st.button("➕ Add opposing-team mini-stack"):
+                mini_rules.append({
+                    "type": "opposing_teams",
+                    "team1": "",
+                    "team2": "",
+                    "player1": "",
+                    "player2": "",
+                    "exposure_pct": 0.0,
+                })
+
+        remove_idx = []
+
+        # DK caps
+        POS_CAPS = {"QB": 1, "RB": 3, "WR": 4, "TE": 2, "DST": 1}
+
+        # Locked slot count for a team
+        def locked_slots(team):
+            locked = {p: 0 for p in POS_CAPS}
+
+            # Required players
+            req = STACK_REQUIRED.get(team, [])
+            r = df_filtered[
+                (df_filtered["TeamAbbrev"] == team) &
+                (df_filtered["Name"].isin(req))
+            ]
+            for pos in POS_CAPS:
+                locked[pos] += (r["Position"] == pos).sum()
+
+            # Optional players with 100% exposure
+            opt = STACK_OPTIONAL.get(team, {})
+            always = [n for n, pct in opt.items() if pct >= 1.0]
+            r2 = df_filtered[
+                (df_filtered["TeamAbbrev"] == team) &
+                (df_filtered["Name"].isin(always))
+            ]
+            for pos in POS_CAPS:
+                locked[pos] += (r2["Position"] == pos).sum()
+
+            return locked
+
+        # Count pos usage for mini pair
+        def mini_positions(rule):
+            counts = {p: 0 for p in POS_CAPS}
+
+            if rule["type"] == "same_team":
+                team = rule["team"]
+                for name in [rule["player1"], rule["player2"]]:
+                    if not name:
+                        continue
+                    row = df_filtered[
+                        (df_filtered["TeamAbbrev"] == team) &
+                        (df_filtered["Name"] == name)
+                    ]
+                    if not row.empty:
+                        counts[row.iloc[0]["Position"]] += 1
+
+            elif rule["type"] == "opposing_teams":
+                t1, p1 = rule["team1"], rule["player1"]
+                t2, p2 = rule["team2"], rule["player2"]
+
+                if p1:
+                    r1 = df_filtered[
+                        (df_filtered["TeamAbbrev"] == t1) &
+                        (df_filtered["Name"] == p1)
+                    ]
+                    if not r1.empty:
+                        counts[r1.iloc[0]["Position"]] += 1
+
+                if p2:
+                    r2 = df_filtered[
+                        (df_filtered["TeamAbbrev"] == t2) &
+                        (df_filtered["Name"] == p2)
+                    ]
+                    if not r2.empty:
+                        counts[r2.iloc[0]["Position"]] += 1
+
+            return counts
+
+        # ============================================================
+        #                    RENDER EACH MINI-RULE
+        # ============================================================
+        for i, rule in enumerate(mini_rules):
+
+            with st.expander(f"Mini-stack #{i+1} ({rule['type']})", expanded=False):
+
+                # GLOBAL POSITIONS AVAILABLE
+                global_pos = enforce_global_consistency(df_filtered)
+
+                # Exposure slider with auto cap
+                other_sum = sum(
+                    (r.get("exposure_pct", 0.0) / 100.0)
+                    for j, r in enumerate(mini_rules)
+                    if j != i
+                )
+                remaining = max(0.0, 1.0 - other_sum)
+                cur_val = min(rule.get("exposure_pct", 0.0), remaining * 100.0)
+
+                exp = st.slider(
+                    "Exposure (%)",
+                    0.0, remaining * 100.0,
+                    cur_val,
+                    1.0,
+                    key=f"mini_exp_{i}",
+                )
+                rule["exposure_pct"] = exp
+
+                # Delete button
+                if st.button("Delete mini-stack", key=f"mini_del_{i}"):
+                    remove_idx.append(i)
+                    continue
+
+                # SAME TEAM MINI
+                if rule["type"] == "same_team":
+
+                    teams_opt = [""] + sorted(df_filtered["TeamAbbrev"].unique().tolist())
+                    rule["team"] = st.selectbox(
+                        "Team:",
+                        teams_opt,
+                        index=teams_opt.index(rule["team"]) if rule["team"] in teams_opt else 0,
+                        key=f"mini_same_team_{i}",
+                    )
+
+                    if rule["team"]:
+                        df_team = df_filtered[df_filtered["TeamAbbrev"] == rule["team"]]
+
+                        team_players = []
+                        for _, r in df_team.iterrows():
+                            pos = r["Position"]
+                            if global_pos["remain"][pos] > 0:
+                                team_players.append(r["Name"])
+
+                        p_opts = [""] + sorted(team_players)
+
+                        rule["player1"] = st.selectbox(
+                            "Player 1:",
+                            p_opts,
+                            index=p_opts.index(rule["player1"]) if rule["player1"] in p_opts else 0,
+                            key=f"mini_same_p1_{i}",
+                        )
+                        rule["player2"] = st.selectbox(
+                            "Player 2:",
+                            p_opts,
+                            index=p_opts.index(rule["player2"]) if rule["player2"] in p_opts else 0,
+                            key=f"mini_same_p2_{i}",
+                        )
+                    else:
+                        rule["player1"] = ""
+                        rule["player2"] = ""
+
+                # OPPOSING TEAMS MINI
+                elif rule["type"] == "opposing_teams":
+
+                    teams_opt = [""] + sorted(df_filtered["TeamAbbrev"].unique().tolist())
+                    rule["team1"] = st.selectbox(
+                        "Team 1:",
+                        teams_opt,
+                        index=teams_opt.index(rule["team1"]) if rule["team1"] in teams_opt else 0,
+                        key=f"mini_opp_t1_{i}",
+                    )
+
+                    # Auto opponent
+                    rule["team2"] = opponent_map.get(rule["team1"], "")
+
+                    st.caption(f"Team 2: **{rule['team2']}**")
+
+                    # Team 1 pool
+                    df1 = df_filtered[df_filtered["TeamAbbrev"] == rule["team1"]]
+                    p1_pool = []
+                    for _, r in df1.iterrows():
+                        if global_pos["remain"][r["Position"]] > 0:
+                            p1_pool.append(r["Name"])
+
+                    # Team 2 pool
+                    df2 = df_filtered[df_filtered["TeamAbbrev"] == rule["team2"]]
+                    p2_pool = []
+                    for _, r in df2.iterrows():
+                        if global_pos["remain"][r["Position"]] > 0:
+                            p2_pool.append(r["Name"])
+
+                    p1_opts = [""] + sorted(p1_pool)
+                    p2_opts = [""] + sorted(p2_pool)
+
+                    rule["player1"] = st.selectbox(
+                        "Player from Team 1:",
+                        p1_opts,
+                        index=p1_opts.index(rule["player1"]) if rule["player1"] in p1_opts else 0,
+                        key=f"mini_opp_p1_{i}",
+                    )
+                    rule["player2"] = st.selectbox(
+                        "Player from Team 2:",
+                        p2_opts,
+                        index=p2_opts.index(rule["player2"]) if rule["player2"] in p2_opts else 0,
+                        key=f"mini_opp_p2_{i}",
+                    )
+
+                # FINAL FEASIBILITY CHECK
+                p1 = rule.get("player1")
+                p2 = rule.get("player2")
+
+                if p1 and p2 and STACK_TEAMS:
+                    mini_pos = mini_positions(rule)
+                    feasible = False
+
+                    for t in STACK_TEAMS:
+                        locked = locked_slots(t)
+                        ok = True
+                        for pos in POS_CAPS:
+                            if locked[pos] + mini_pos[pos] > POS_CAPS[pos]:
+                                ok = False
+                                break
+                        if ok:
+                            feasible = True
+                            break
+
+                    if not feasible:
+                        st.info(
+                            "Mini-stack exceeds positional caps for all stack teams. "
+                            "Resetting selection."
+                        )
+                        rule["player1"] = ""
+                        rule["player2"] = ""
+                        rule["exposure_pct"] = 0.0
+                        st.session_state[f"mini_exp_{i}"] = 0.0
+
+        # Remove deleted mini rules
+        if remove_idx:
+            st.session_state["mini_rules"] = [
+                r for j, r in enumerate(mini_rules) if j not in remove_idx
+            ]
+
+        # Summary
+        if st.session_state["mini_rules"]:
+            st.markdown("### Expected Mini-stack Usage:")
+            for i, rule in enumerate(st.session_state["mini_rules"]):
+                pct = rule.get("exposure_pct", 0.0) / 100.0
+                est = NUM_LINEUPS * pct
+                st.caption(f"- Mini #{i+1}: {pct * 100:.1f}% → ~{est:.1f} lineups")
+
     #                         BUILD LINEUPS TAB
     # ================================================================
     with tab_build:
