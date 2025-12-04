@@ -1547,7 +1547,7 @@ def run_app():
                         name = getattr(p, "Name", "")
                         pid = getattr(p, "ID", "")
                         sal = getattr(p, "Salary", 0)
-                        rec[slot] = f"{name} {pid}"
+                        rec[slot] = f"{name} ({pid})"
                         total_salary += sal
 
                     rec["Total Salary"] = total_salary
