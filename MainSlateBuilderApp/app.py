@@ -13,7 +13,7 @@ import time
 #                DEFAULT VALUES (MUST EXIST BEFORE run_app)
 # ================================================================
 
-NUM_LINEUPS = 40
+NUM_LINEUPS = 20
 SALARY_CAP = 50000
 MIN_SALARY = 49000
 RANDOM_SEED = 42
